@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type FormEvent } from 'react';
 import {
   Palette,
   Globe,
@@ -17,6 +17,7 @@ import {
   Search,
   Brain,
   RefreshCw,
+  Loader2,
 } from 'lucide-react';
 import { useAppStore, type ThemeMode } from '../lib/store';
 import {
