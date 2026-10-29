@@ -39,22 +39,130 @@ const CLOUD_KEY_STATUS_CHANGED = 'openjarvis-cloud-key-status-changed';
 
 function OllamaModelList() {
   const [models, setModels] = useState<Array<{ name: string; size: number }>>([]);
-  useEffect(() => {
-    fetch('http://localhost:11434/api/tags')
-      .then(r => r.json())
-      .then(data => setModels((data.models || []).map((m: any) => ({ name: m.name, size: m.size }))))
-      .catch(() => setModels([]));
+  const [modelName, setModelName] = useState('qwen3.5:0.8b');
+  const [pulling, setPulling] = useState(false);
+  const [pullStatus, setPullStatus] = useState('');
+  const [pullError, setPullError] = useState('');
+
+  const refreshModels = useCallback(async () => {
+    const response = await fetch('http://localhost:11434/api/tags');
+    if (!response.ok) throw new Error(`Ollama returned HTTP ${response.status}`);
+    const data = await response.json();
+    setModels((data.models || []).map((m: any) => ({ name: m.name, size: m.size })));
   }, []);
-  if (models.length === 0) return <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>No models loaded</span>;
+
+  useEffect(() => {
+    void refreshModels().catch(() => setModels([]));
+  }, [refreshModels]);
+
+  const pullModel = async (event: FormEvent) => {
+    event.preventDefault();
+    const name = modelName.trim();
+    if (!name || pulling) return;
+    setPulling(true);
+    setPullError('');
+    setPullStatus('Connecting to Ollama…');
+    try {
+      const response = await fetch('http://localhost:11434/api/pull', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, stream: true }),
+      });
+      if (!response.ok) {
+        let message = `Ollama returned HTTP ${response.status}`;
+        try {
+          const body = await response.json();
+          if (body?.error) message = String(body.error);
+        } catch {}
+        throw new Error(message);
+      }
+      if (!response.body) throw new Error('Ollama returned no download stream.');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+      let lastStatus = 'Downloading model…';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        pending += decoder.decode(value, { stream: true });
+        const lines = pending.split('\n');
+        pending = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let item: any;
+          try { item = JSON.parse(line); } catch { continue; }
+          if (item.error) throw new Error(String(item.error));
+          if (item.status) {
+            lastStatus = String(item.status);
+            if (typeof item.total === 'number' && item.total > 0 && typeof item.completed === 'number') {
+              const percent = Math.min(100, Math.round((item.completed / item.total) * 100));
+              lastStatus = `${item.status} — ${percent}%`;
+            }
+            setPullStatus(lastStatus);
+          }
+        }
+      }
+      if (pending.trim()) {
+        try {
+          const item = JSON.parse(pending);
+          if (item.error) throw new Error(String(item.error));
+          if (item.status) lastStatus = String(item.status);
+        } catch (error) {
+          if (error instanceof Error && error.message !== 'Unexpected end of JSON input') throw error;
+        }
+      }
+      await refreshModels();
+      setPullStatus(`Download complete: ${name}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setPullError(
+        message.includes('Failed to fetch')
+          ? 'Ollama ist nicht erreichbar oder blockiert diese App. Starte Ollama unter Windows und versuche es erneut.'
+          : message,
+      );
+      setPullStatus('');
+    } finally {
+      setPulling(false);
+    }
+  };
+
   return (
-    <div className="flex flex-wrap gap-1">
-      {models.map(m => (
-        <span key={m.name} className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px]"
-          style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)' }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-success)', display: 'inline-block' }} />
-          {m.name} ({(m.size / 1e9).toFixed(1)} GB)
-        </span>
-      ))}
+    <div className="flex w-full min-w-0 flex-col gap-3">
+      <div className="flex flex-wrap gap-1">
+        {models.map(m => (
+          <span key={m.name} className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px]"
+            style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)' }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-success)', display: 'inline-block' }} />
+            {m.name} ({(m.size / 1e9).toFixed(1)} GB)
+          </span>
+        ))}
+        {models.length === 0 && (
+          <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>No models loaded yet</span>
+        )}
+      </div>
+      <form onSubmit={pullModel} className="flex flex-wrap items-center gap-2">
+        <input
+          aria-label="Ollama model to download"
+          value={modelName}
+          onChange={event => setModelName(event.target.value)}
+          disabled={pulling}
+          placeholder="qwen3.5:0.8b"
+          className="min-w-0 flex-1 px-2 py-1.5 rounded text-xs"
+          style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }}
+        />
+        <button
+          type="submit"
+          disabled={pulling || !modelName.trim()}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium disabled:opacity-60"
+          style={{ background: 'var(--color-accent)', color: 'white' }}
+        >
+          {pulling ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+          {pulling ? 'Downloading…' : 'Download model'}
+        </button>
+      </form>
+      {pulling && <div className="text-xs" role="status" style={{ color: 'var(--color-text-secondary)' }}>{pullStatus}</div>}
+      {!pulling && pullStatus && <div className="text-xs" role="status" style={{ color: 'var(--color-success)' }}>{pullStatus}</div>}
+      {pullError && <div className="text-xs break-words" role="alert" style={{ color: 'var(--color-error)' }}>{pullError}</div>}
     </div>
   );
 }
@@ -537,9 +645,6 @@ export function SettingsPage() {
             <SettingRow label="Local models (Ollama)" description="Models available for local inference">
               <OllamaModelList />
             </SettingRow>
-            <div className="text-xs mt-2 px-1" style={{ color: 'var(--color-text-tertiary)' }}>
-              Run <code className="px-1 py-0.5 rounded text-[11px]" style={{ background: 'var(--color-bg-tertiary)' }}>ollama pull &lt;model-name&gt;</code> in your terminal to add more models
-            </div>
             <SettingRow label="Cloud providers" description="Green dot means API key is configured">
               <div className="flex flex-wrap gap-3">
                 <CloudProviderStatus label="OpenAI" keyName="OPENAI_API_KEY" />
