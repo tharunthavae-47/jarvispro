@@ -37,7 +37,9 @@ export default defineConfig({
     }),
   ],
   build: {
-    outDir: '../src/openjarvis/server/static',
+    // Vercel deploys the browser app independently; Docker builds keep the
+    // generated assets inside the Python package for FastAPI to serve.
+    outDir: process.env.VERCEL ? 'dist' : '../src/openjarvis/server/static',
     emptyOutDir: true,
     // Preserve the Vite 6 browser baseline for existing desktop webviews.
     target: ['es2020', 'edge88', 'firefox78', 'chrome87', 'safari14'],
